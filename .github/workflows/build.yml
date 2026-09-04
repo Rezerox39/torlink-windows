@@ -38,12 +38,56 @@ jobs:
         working-directory: torlink
         run: npm install
 
-      - name: Install build tools
+      - name: Install esbuild and @yao-pkg/pkg
         run: npm install -g esbuild @yao-pkg/pkg
 
-      - name: "Pass 1: Bundle to ESM (native modules stubbed)"
+      - name: Create native module stub
+        shell: bash
+        run: echo 'module.exports = {}; module.exports.default = {};' > scripts/empty.js
+
+      - name: "Pass 1: Bundle to ESM (native modules aliased to stub)"
         working-directory: torlink
-        run: node ../scripts/build-esm.mjs
+        shell: bash
+        run: |
+          esbuild src/index.tsx \
+            --bundle \
+            --platform=node \
+            --target=node22 \
+            --format=esm \
+            --outfile=dist/torlink.mjs \
+            --jsx=automatic \
+            --jsx-import-source=react \
+            --loader:.tsx=tsx \
+            --loader:.ts=ts \
+            --define:process.env.TORLINK_NO_WEBRTC="1" \
+            --define:process.env.TORLINK_NO_UPDATE_CHECK="1" \
+            --alias:node-datachannel=../scripts/empty.js \
+            --alias:utp-native=../scripts/empty.js \
+            --alias:bufferutil=../scripts/empty.js \
+            --alias:utf-8-validate=../scripts/empty.js \
+            --alias:react-devtools-core=../scripts/empty.js \
+            --external:fs --external:path --external:os \
+            --external:http --external:https --external:net \
+            --external:crypto --external:events --external:stream \
+            --external:url --external:util --external:child_process \
+            --external:dgram --external:dns --external:tls \
+            --external:zlib --external:querystring --external:assert \
+            --external:buffer --external:timers --external:worker_threads \
+            --external:perf_hooks --external:tty --external:readline \
+            --external:string_decoder --external:module \
+            --external:node:fs --external:node:path --external:node:os \
+            --external:node:http --external:node:https --external:node:net \
+            --external:node:crypto --external:node:events --external:node:stream \
+            --external:node:url --external:node:util --external:node:child_process \
+            --external:node:dgram --external:node:dns --external:node:tls \
+            --external:node:zlib --external:node:querystring --external:node:assert \
+            --external:node:buffer --external:node:timers --external:node:worker_threads \
+            --external:node:perf_hooks --external:node:tty --external:node:process \
+            --external:node:module --external:fs/promises --external:node:fs/promises
+
+      - name: Hardcode version
+        working-directory: torlink
+        run: node ../scripts/hardcode-version.mjs dist/torlink.mjs package.json
 
       - name: "Pass 2: Convert ESM to CJS"
         working-directory: torlink
@@ -62,15 +106,8 @@ jobs:
 
       - name: Configure pkg
         working-directory: torlink
-        shell: bash
         run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-            pkg.scripts = ['dist/torlink.cjs'];
-            pkg.assets = ['dist/webrtc-stub.mjs'];
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-          "
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.scripts=['dist/torlink.cjs'];p.assets=['dist/webrtc-stub.mjs'];fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
 
       - name: "Pass 3: Package with @yao-pkg/pkg"
         working-directory: torlink
@@ -101,26 +138,15 @@ jobs:
           body: |
             ## torlink v1.8.0 — Windows Native Build
 
-            Built on `windows-latest` with Visual Studio 2022.
-
             - Single self-contained CJS file (no .mjs, no dynamic import)
             - Native modules stubbed (degrades to TCP-only transport)
-            - Top-level await handled via void wrapper
             - No .node files in snapshot — nothing to fail at runtime
+            - Just double-click `torlink.exe` to run
 
             ### Quick Start
             1. Download `torlink.exe`
             2. Double-click it, or run from terminal: `torlink.exe`
             3. No Node.js needed
-
-            ### What it does
-            - Search across curated sources (FitGirl, YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease)
-            - Download to `Downloads\torlink\` folder
-            - Seed automatically after download
-
-            ### Keyboard shortcuts
-            - Type query + Enter to search
-            - ↑/↓ to navigate, d to download, ? for help
 
             ### Source
             - [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
