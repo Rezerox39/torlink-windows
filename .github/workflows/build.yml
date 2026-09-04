@@ -19,9 +19,6 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout this repo (has build scripts)
-        uses: actions/checkout@v4
-
       - name: Checkout torlink source
         uses: actions/checkout@v4
         with:
@@ -34,39 +31,96 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install torlink dependencies
+      - name: Install dependencies
         working-directory: torlink
         run: npm install
 
-      - name: Install build tools
+      - name: Install esbuild and @yao-pkg/pkg
+        working-directory: torlink
         run: npm install -g esbuild @yao-pkg/pkg
 
-      - name: "Pass 1: Bundle to ESM (handles top-level await)"
+      - name: Bundle as ESM (handles top-level await)
         working-directory: torlink
-        run: esbuild src/index.tsx --bundle --platform=node --target=node22 --format=esm --outfile=dist/torlink.mjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
-
-      - name: Hardcode version
-        working-directory: torlink
-        run: node ../scripts/hardcode-version.mjs dist/torlink.mjs package.json
-
-      - name: "Pass 2: Convert ESM to CJS"
-        working-directory: torlink
-        run: node ../scripts/esm-to-cjs.mjs dist/torlink.mjs dist/torlink.cjs
-
-      - name: Create webrtc-stub
-        working-directory: torlink
-        shell: pwsh
+        shell: bash
         run: |
-          @"
+          esbuild src/index.tsx \
+            --bundle \
+            --platform=node \
+            --target=node22 \
+            --format=esm \
+            --outfile=dist/torlink.mjs \
+            --jsx=automatic \
+            --jsx-import-source=react \
+            --loader:.tsx=tsx \
+            --loader:.ts=ts \
+            --define:process.env.TORLINK_NO_WEBRTC="1" \
+            --define:process.env.TORLINK_NO_UPDATE_CHECK="1" \
+            --external:node-datachannel \
+            --external:utp-native \
+            --external:bufferutil \
+            --external:utf-8-validate \
+            --external:react-devtools-core \
+            --external:fs \
+            --external:path \
+            --external:events \
+            --external:crypto \
+            --external:os \
+            --external:stream \
+            --external:net \
+            --external:tls \
+            --external:child_process \
+            --external:url \
+            --external:util \
+            --external:buffer \
+            --external:zlib \
+            --external:http \
+            --external:https \
+            --external:dns \
+            --external:readline \
+            --external:querystring \
+            --external:string_decoder \
+            --external:tty \
+            --external:assert \
+            --external:module
+
+      - name: Create CJS entry wrapper
+        working-directory: torlink
+        shell: bash
+        run: |
+          cat > entry.cjs << 'ENTRY'
+          #!/usr/bin/env node
+          "use strict";
+          (async function() {
+            try {
+              await import("./dist/torlink.mjs");
+            } catch(err) {
+              console.error(err);
+              process.exit(1);
+            }
+          })();
+          ENTRY
+
+      - name: Create webrtc-stub.mjs
+        working-directory: torlink
+        shell: bash
+        run: |
+          cat > dist/webrtc-stub.mjs << 'STUB'
           export const RTCPeerConnection = undefined;
           export const RTCSessionDescription = undefined;
           export const RTCIceCandidate = undefined;
           export default undefined;
-          "@ | Out-File -Encoding utf8 dist/webrtc-stub.mjs
+          STUB
 
-      - name: "Pass 3: Package with @yao-pkg/pkg"
+      - name: Package with @yao-pkg/pkg
         working-directory: torlink
-        run: pkg -t node22-win-x64 dist/torlink.cjs -o torlink.exe --fallback-to-source
+        shell: bash
+        run: |
+          pkg -t node22-win-x64 \
+            entry.cjs \
+            -o torlink.exe \
+            --fallback-to-source \
+            --asset=dist/torlink.mjs \
+            --asset=dist/webrtc-stub.mjs
 
       - name: Verify exe
         working-directory: torlink
@@ -88,14 +142,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: torlink v1.8.0 Windows (CJS Bundle)
+          name: torlink v1.8.0 Windows (ESM + CJS wrapper)
           body: |
             ## torlink v1.8.0 — Windows Native Build
 
             Built on `windows-latest` with Visual Studio 2022.
 
-            - Single CJS bundle (no dynamic imports)
-            - Native modules compiled for Windows x64
+            - ESM bundle with CJS wrapper (handles top-level await properly)
+            - Native modules compiled on Windows (yoga-layout, node-datachannel, utp-native)
             - Just double-click `torlink.exe` to run
 
             ### Quick Start
