@@ -4,24 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       create_release:
-        description: 'Create GitHub release with the exe'
-        required: false
+        description: 'Create GitHub release'
         type: boolean
         default: true
       tag:
-        description: 'Release tag (e.g. v1.8.0)'
+        description: 'Release tag'
         required: false
-        type: string
-        default: 'v1.8.0'
+        default: 'v1.8.0-windows'
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout torlink source
         uses: actions/checkout@v4
@@ -30,7 +26,7 @@ jobs:
           ref: v1.8.0
           path: torlink
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -39,16 +35,29 @@ jobs:
         working-directory: torlink
         run: npm install
 
-      - name: Build TypeScript
+      - name: Install build tools
         working-directory: torlink
-        run: npm run build
+        run: npm install -g esbuild @yao-pkg/pkg
 
-      - name: Install @yao-pkg/pkg
-        run: npm install -g @yao-pkg/pkg
-
-      - name: Package into EXE
+      - name: Bundle as single CJS (no dynamic imports)
         working-directory: torlink
-        run: pkg -t node22-win-x64 dist/cli.cjs -o torlink.exe
+        run: |
+          esbuild src/index.tsx --bundle --platform=node --target=node22 --format=cjs --outfile=dist/torlink.cjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
+
+      - name: Create webrtc-stub for pkg
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          @"
+          export const RTCPeerConnection = undefined;
+          export const RTCSessionDescription = undefined;
+          export const RTCIceCandidate = undefined;
+          export default undefined;
+          "@ | Out-File -Encoding utf8 dist/webrtc-stub.mjs
+
+      - name: Package with @yao-pkg/pkg
+        working-directory: torlink
+        run: pkg -t node22-win-x64 dist/torlink.cjs -o torlink.exe --fallback-to-source
 
       - name: Verify exe
         working-directory: torlink
@@ -57,50 +66,42 @@ jobs:
           $size = (Get-Item torlink.exe).Length
           $sizeMB = [math]::Round($size / 1MB, 1)
           Write-Host "torlink.exe: $sizeMB MB"
-          if ($size -lt 1MB) { throw "exe too small, build failed" }
+          if ($size -lt 1MB) { throw "exe too small" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: torlink-windows-x64
+          name: torlink-windows
           path: torlink/torlink.exe
-          retention-days: 30
-
-      - name: Delete existing release (if any)
-        if: inputs.create_release == true
-        continue-on-error: true
-        run: gh release delete "${{ inputs.tag }}" --yes || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: Rezerox39/torlink-windows
 
       - name: Create Release
         if: inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: "torlink ${{ inputs.tag }} — Windows x64"
+          name: torlink v1.8.0 Windows (CJS Bundle)
           body: |
-            ## torlink ${{ inputs.tag }} — Windows Executable
+            ## torlink v1.8.0 — Windows Native Build
 
-            Built on GitHub Actions (`windows-latest`) with Visual Studio Build Tools.
+            Built on `windows-latest` with Visual Studio 2022.
 
-            All native modules (yoga-layout, node-datachannel, utp-native) compiled natively for Windows x64.
+            - Single CJS bundle (no dynamic import issues)
+            - Native modules compiled for Windows x64
+            - Just double-click `torlink.exe` to run
 
             ### Quick Start
-            1. Download `torlink.exe` below
-            2. Double-click it, or run from a terminal: `torlink.exe`
-            3. No Node.js or other dependencies needed
+            1. Download `torlink.exe`
+            2. Double-click it, or run from terminal: `torlink.exe`
+            3. No Node.js needed
 
             ### What it does
-            - **Search** across curated sources (FitGirl, YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease)
-            - **Download** directly to your `Downloads\\torlink\\` folder
-            - **Seed** automatically after download
-            - **Browse** the curated library with no search query
+            - Search across curated sources (FitGirl, YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease)
+            - Download to `Downloads\torlink\` folder
+            - Seed automatically after download
 
             ### Keyboard shortcuts
-            - Type a query + **Enter** to search
-            - **↑/↓** to navigate, **d** to download, **?** for help
+            - Type query + Enter to search
+            - ↑/↓ to navigate, d to download, ? for help
 
             ### Headless modes
             ```
@@ -111,7 +112,7 @@ jobs:
             ```
 
             ### Source
-            - Built from [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
+            - [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
             - Node.js 22 runtime embedded via @yao-pkg/pkg
           files: torlink/torlink.exe
           make_latest: true
