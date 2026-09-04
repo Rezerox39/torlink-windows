@@ -101,7 +101,15 @@ jobs:
           if (-not (Test-Path $sevenZip)) { throw "7-Zip not found" }
 
           $sfx = "C:\Program Files\7-Zip\7zSD.sfx"
-          if (-not (Test-Path $sfx)) { throw "7zSD.sfx not found at $sfx" }
+          if (-not (Test-Path $sfx)) {
+            Write-Host "7zSD.sfx not found, downloading 7-Zip Extra..."
+            Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2409-extra.7z" -OutFile 7z-extra.7z
+            & $sevenZip x 7z-extra.7z -o7z-extra -y
+            $sfx = Get-ChildItem 7z-extra -Filter "7zSD.sfx" -Recurse | Select-Object -First 1
+            if (-not $sfx) { throw "7zSD.sfx not found even after download" }
+            $sfx = $sfx.FullName
+            Write-Host "Downloaded 7zSD.sfx: $sfx"
+          }
 
           & $sevenZip a -t7z -mx=7 -mmt=on portable.7z portable\* -y
           Write-Host "portable.7z: $((Get-Item portable.7z).Length / 1MB) MB"
