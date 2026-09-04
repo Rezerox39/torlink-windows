@@ -19,6 +19,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      - name: Checkout this repo (has build scripts)
+        uses: actions/checkout@v4
+
       - name: Checkout torlink source
         uses: actions/checkout@v4
         with:
@@ -31,20 +34,29 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Install torlink dependencies
         working-directory: torlink
         run: npm install
 
       - name: Install build tools
-        working-directory: torlink
         run: npm install -g esbuild @yao-pkg/pkg
 
-      - name: Bundle as single CJS (no dynamic imports)
+      - name: "Pass 1: Bundle to ESM (handles top-level await)"
         working-directory: torlink
         run: |
-          esbuild src/index.tsx --bundle --platform=node --target=node22 --format=cjs --outfile=dist/torlink.cjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
+          esbuild src/index.tsx --bundle --platform=node --target=node22 --format=esm --outfile=dist/torlink.mjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
 
-      - name: Create webrtc-stub for pkg
+      - name: Hardcode version
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          node -e "const fs=require('fs');let s=fs.readFileSync('dist/torlink.mjs','utf8');const p=JSON.parse(fs.readFileSync('package.json','utf8'));s=s.replace(/readFileSync[2]?\(new URL\([^)]+package\.json[^)]+\)/g,'JSON.parse(JSON.stringify({version:\"'+p.version+'\"}))');s=s.replace(/fs\d+\.readFileSync\(new URL\([^)]+package\.json[^)]+\)/g,'JSON.parse(JSON.stringify({version:\"'+p.version+'\"}))');fs.writeFileSync('dist/torlink.mjs',s);console.log('Version hardcoded to '+p.version)"
+
+      - name: "Pass 2: Convert ESM to CJS"
+        working-directory: torlink
+        run: node ../scripts/esm-to-cjs.mjs dist/torlink.mjs dist/torlink.cjs
+
+      - name: Create webrtc-stub
         working-directory: torlink
         shell: pwsh
         run: |
@@ -55,7 +67,7 @@ jobs:
           export default undefined;
           "@ | Out-File -Encoding utf8 dist/webrtc-stub.mjs
 
-      - name: Package with @yao-pkg/pkg
+      - name: "Pass 3: Package with @yao-pkg/pkg"
         working-directory: torlink
         run: pkg -t node22-win-x64 dist/torlink.cjs -o torlink.exe --fallback-to-source
 
@@ -85,7 +97,7 @@ jobs:
 
             Built on `windows-latest` with Visual Studio 2022.
 
-            - Single CJS bundle (no dynamic import issues)
+            - Single CJS bundle (no dynamic imports)
             - Native modules compiled for Windows x64
             - Just double-click `torlink.exe` to run
 
