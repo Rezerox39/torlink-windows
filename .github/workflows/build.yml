@@ -111,16 +111,23 @@ jobs:
           export default undefined;
           STUB
 
-      - name: Package with @yao-pkg/pkg
+      - name: Configure pkg assets
         working-directory: torlink
         shell: bash
         run: |
-          pkg -t node22-win-x64 \
-            entry.cjs \
-            -o torlink.exe \
-            --fallback-to-source \
-            --asset=dist/torlink.mjs \
-            --asset=dist/webrtc-stub.mjs
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+            pkg.bin = { torlnk: 'entry.cjs' };
+            pkg.scripts = ['entry.cjs'];
+            pkg.assets = ['dist/torlink.mjs', 'dist/webrtc-stub.mjs'];
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+
+      - name: Package with @yao-pkg/pkg
+        working-directory: torlink
+        shell: bash
+        run: pkg -t node22-win-x64 -o torlink.exe --fallback-to-source
 
       - name: Verify exe
         working-directory: torlink
