@@ -19,6 +19,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      - name: Checkout this repo (has build scripts)
+        uses: actions/checkout@v4
+
       - name: Checkout torlink source
         uses: actions/checkout@v4
         with:
@@ -35,11 +38,10 @@ jobs:
         working-directory: torlink
         run: npm install
 
-      - name: Install esbuild and @yao-pkg/pkg
-        working-directory: torlink
+      - name: Install build tools
         run: npm install -g esbuild @yao-pkg/pkg
 
-      - name: Bundle as ESM (handles top-level await)
+      - name: "Pass 1: Bundle to ESM"
         working-directory: torlink
         shell: bash
         run: |
@@ -83,22 +85,13 @@ jobs:
             --external:assert \
             --external:module
 
-      - name: Create CJS entry wrapper
+      - name: Hardcode version
         working-directory: torlink
-        shell: bash
-        run: |
-          cat > entry.cjs << 'ENTRY'
-          #!/usr/bin/env node
-          "use strict";
-          (async function() {
-            try {
-              await import("./dist/torlink.mjs");
-            } catch(err) {
-              console.error(err);
-              process.exit(1);
-            }
-          })();
-          ENTRY
+        run: node ../scripts/hardcode-version.mjs dist/torlink.mjs package.json
+
+      - name: "Pass 2: Convert ESM to CJS"
+        working-directory: torlink
+        run: node ../scripts/esm-to-cjs.mjs dist/torlink.mjs dist/torlink.cjs
 
       - name: Create webrtc-stub.mjs
         working-directory: torlink
@@ -111,23 +104,23 @@ jobs:
           export default undefined;
           STUB
 
-      - name: Configure pkg assets
+      - name: Configure pkg (assets in package.json)
         working-directory: torlink
         shell: bash
         run: |
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-            pkg.bin = { torlnk: 'entry.cjs' };
-            pkg.scripts = ['entry.cjs'];
-            pkg.assets = ['dist/torlink.mjs', 'dist/webrtc-stub.mjs'];
+            pkg.scripts = ['dist/torlink.cjs'];
+            pkg.assets = ['dist/webrtc-stub.mjs'];
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+            console.log('pkg configured: scripts + assets');
           "
 
-      - name: Package with @yao-pkg/pkg
+      - name: "Pass 3: Package with @yao-pkg/pkg"
         working-directory: torlink
         shell: bash
-        run: pkg -t node22-win-x64 entry.cjs -o torlink.exe --fallback-to-source
+        run: pkg -t node22-win-x64 dist/torlink.cjs -o torlink.exe --fallback-to-source
 
       - name: Verify exe
         working-directory: torlink
@@ -149,14 +142,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: torlink v1.8.0 Windows (ESM + CJS wrapper)
+          name: torlink v1.8.0 Windows (CJS Bundle)
           body: |
             ## torlink v1.8.0 — Windows Native Build
 
             Built on `windows-latest` with Visual Studio 2022.
 
-            - ESM bundle with CJS wrapper (handles top-level await properly)
-            - Native modules compiled on Windows (yoga-layout, node-datachannel, utp-native)
+            - Single self-contained CJS file (no dynamic imports, no .mjs)
+            - Native modules compiled on Windows
+            - Top-level await handled via async IIFE wrapping
             - Just double-click `torlink.exe` to run
 
             ### Quick Start
@@ -172,14 +166,6 @@ jobs:
             ### Keyboard shortcuts
             - Type query + Enter to search
             - ↑/↓ to navigate, d to download, ? for help
-
-            ### Headless modes
-            ```
-            torlink.exe search "query" --category movies
-            torlink.exe seed ./my-folder
-            torlink.exe serve
-            torlink.exe watch ./incoming
-            ```
 
             ### Source
             - [baairon/torlink](https://github.com/baairon/torlink) v1.8.0

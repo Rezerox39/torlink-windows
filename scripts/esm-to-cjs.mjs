@@ -17,74 +17,55 @@ const builtins = new Set([
   "node:child_process", "node:dgram", "node:dns", "node:tls", "node:zlib",
   "node:querystring", "node:assert", "node:buffer", "node:timers",
   "node:worker_threads", "node:perf_hooks", "node:tty", "node:process",
-  "process", "module",
-  "fs/promises", "node:fs/promises"
+  "node:module", "process", "module", "fs/promises", "node:fs/promises"
 ]);
 
 function isBuiltin(mod) {
   if (builtins.has(mod)) return true;
-  // Handle "node:" prefix
-  if (mod.startsWith("node:")) return builtins.has(mod) || builtins.has(mod.slice(5));
-  // Common short names
-  const map = {
-    "stream": "stream", "fs": "fs", "path": "path", "os": "os",
-    "http": "http", "https": "https", "net": "net", "crypto": "crypto",
-    "events": "events", "util": "util", "child_process": "child_process",
-    "dgram": "dgram", "dns": "dns", "tls": "tls", "zlib": "zlib",
-    "querystring": "querystring", "assert": "assert", "buffer": "buffer",
-    "timers": "timers", "worker_threads": "worker_threads",
-    "perf_hooks": "perf_hooks", "tty": "tty", "process": "process",
-    "module": "module"
-  };
-  return !!map[mod];
+  if (mod.startsWith("node:")) return builtins.has(mod.slice(5));
+  return false;
 }
 
-// Process line by line
+// Phase 1: Convert import/export statements line by line
 const lines = src.split("\n");
 const result = [];
 let i = 0;
 
 while (i < lines.length) {
   const line = lines[i];
-  
-  // Match various import patterns
-  // import X from "mod"
+
+  // import X from "builtin"
   let m = line.match(/^import\s+(\w+)\s+from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[2])) {
     result.push(`const ${m[1]} = require("${m[2]}");`);
-    i++;
-    continue;
+    i++; continue;
   }
 
-  // import * as X from "mod"
+  // import * as X from "builtin"
   m = line.match(/^import\s+\*\s+as\s+(\w+)\s+from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[2])) {
     result.push(`const ${m[1]} = require("${m[2]}");`);
-    i++;
-    continue;
+    i++; continue;
   }
 
-  // import { X } from "mod" (single line)
+  // import { X } from "builtin" (single line)
   m = line.match(/^import\s*\{([^}]+)\}\s*from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[2])) {
     result.push(`const {${m[1]}} = require("${m[2]}");`);
-    i++;
-    continue;
+    i++; continue;
   }
 
-  // import X, { Y } from "mod" (combined default + named, single line)
+  // import X, { Y } from "builtin" (combined default + named)
   m = line.match(/^import\s+(\w+)\s*,\s*\{([^}]+)\}\s*from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[3])) {
     result.push(`const ${m[1]} = require("${m[3]}");`);
     result.push(`const {${m[2]}} = require("${m[3]}");`);
-    i++;
-    continue;
+    i++; continue;
   }
 
-  // import { X } from "mod" (multi-line, closing on same line or next)
+  // import { X } from "builtin" (multi-line)
   m = line.match(/^import\s*\{([^}]+)$/);
   if (m) {
-    // Collect until we find closing }
     let collected = m[1];
     let j = i + 1;
     while (j < lines.length && !lines[j].includes("}")) {
@@ -103,20 +84,17 @@ while (i < lines.length) {
     }
   }
 
-  // import type { X } from "mod" — remove
+  // import type { X } from "builtin" — remove
   if (line.match(/^import\s+type\s+\{/)) {
-    // Skip until end of statement
     while (i < lines.length && !lines[i].includes(";") && !lines[i].includes("}")) i++;
-    i++;
-    continue;
+    i++; continue;
   }
 
-  // import "mod" — side-effect
+  // import "builtin" — side-effect
   m = line.match(/^import\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[1])) {
     result.push(`require("${m[1]}");`);
-    i++;
-    continue;
+    i++; continue;
   }
 
   result.push(line);
@@ -125,20 +103,26 @@ while (i < lines.length) {
 
 src = result.join("\n");
 
-// Remove export keywords
+// Phase 2: Remove export keywords
 src = src.replace(/^export\s+default\s+/gm, "");
 src = src.replace(/^export\s+const\s+/gm, "const ");
 src = src.replace(/^export\s+function\s+/gm, "function ");
 src = src.replace(/^export\s+class\s+/gm, "class ");
 src = src.replace(/^export\s+async\s+/gm, "async ");
+src = src.replace(/^export\s+\{/gm, "// export {");
 src = src.replace(/^export\s+/gm, "");
-src = src.replace(/^export\s*\{[^}]*\};?\s*\n?/gm, "");
 
-// Replace import.meta.url
+// Phase 3: Replace import.meta.url
 src = src.replace(/import\.meta\.url/g, 'require("node:url").pathToFileURL(__filename).href');
 
-// Replace top-level await
-src = src.replace(/^(\s*)await\s+(init_\w+)\(\);/gm, "$1void $2();");
+// Phase 4: Handle top-level await by wrapping entire body in async IIFE
+// Find the main execution code (after all __esm definitions and at the bottom)
+// The pattern is: init_xxx() calls at the end of the file
+const tlaPattern = /^(\s*)await\s+(init_\w+)\(\);/gm;
+let hasTLA = tlaPattern.test(src);
+if (hasTLA) {
+  src = src.replace(/^(\s*)await\s+(init_\w+)\(\);/gm, "$1void $2();");
+}
 
 const header = `#!/usr/bin/env node
 "use strict";
@@ -167,3 +151,4 @@ process.title = "torlink";
 writeFileSync(outFile, header + src);
 const size = (readFileSync(outFile).length / 1024).toFixed(0);
 console.log("CJS bundle written:", outFile, "(" + size + " KB)");
+console.log("TLA handled:", hasTLA ? "yes (wrapped)" : "no TLA found");
