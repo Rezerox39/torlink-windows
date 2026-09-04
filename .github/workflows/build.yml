@@ -30,8 +30,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: torlink/package-lock.json
 
       - name: Install dependencies
         working-directory: torlink
@@ -41,8 +39,8 @@ jobs:
         working-directory: torlink
         run: npm run build
 
-      - name: Install pkg
-        run: npm install -g pkg
+      - name: Install pkg (maintained fork with Node 22 support)
+        run: npm install -g @yao-pkg/pkg
 
       - name: Package into EXE
         working-directory: torlink
@@ -50,11 +48,12 @@ jobs:
 
       - name: Verify exe
         working-directory: torlink
+        shell: pwsh
         run: |
-          echo "=== File info ==="
-          dir torlink.exe
-          echo "=== Size ==="
-          (Get-Item torlink.exe).Length / 1MB | ForEach-Object { "{0:N1} MB" -f $_ }
+          $size = (Get-Item torlink.exe).Length
+          $sizeMB = [math]::Round($size / 1MB, 1)
+          Write-Host "torlink.exe: $sizeMB MB"
+          if ($size -lt 1MB) { throw "exe too small, build failed" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -72,7 +71,7 @@ jobs:
           body: |
             ## torlink ${{ inputs.tag }} — Windows Executable
 
-            Built on GitHub Actions with Windows runner + Visual Studio Build Tools.
+            Built on GitHub Actions (`windows-latest`) with Visual Studio Build Tools.
 
             All native modules (yoga-layout, node-datachannel, utp-native) compiled natively for Windows x64.
 
@@ -99,16 +98,9 @@ jobs:
             torlink.exe watch ./incoming
             ```
 
-            ### Features
-            - Full WebRTC + uTP + TCP/DHT peer transport
-            - Ink-based terminal UI with full keyboard navigation
-            - Built-in torrent client with seeding support
-            - Auto-update check (when running from source)
-
             ### Source
             - Built from [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
-            - Node.js 22 runtime embedded via pkg
-            - GitHub Actions: windows-latest runner
+            - Node.js 22 runtime embedded via @yao-pkg/pkg
           files: torlink/torlink.exe
           make_latest: true
           fail_on_unmatched_files: true
