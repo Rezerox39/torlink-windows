@@ -1,4 +1,4 @@
-# torlink v1.8.0 — Windows Executable
+# torlink — Windows Executable
 
 A standalone Windows executable of [torlink](https://github.com/baairon/torlink) v1.8.0 — a torrent finder and downloader that lives in your terminal.
 
@@ -11,7 +11,7 @@ A standalone Windows executable of [torlink](https://github.com/baairon/torlink)
 torlink.exe
 ```
 
-That's it. A terminal window opens and torlink runs.
+No Node.js installation required. Everything is bundled.
 
 ## What is torlink?
 
@@ -22,28 +22,48 @@ A terminal-native torrent client with zero setup:
 - **Seed** automatically after download
 - **Browse** the curated library with no search query
 
-## How It Works
+## Keyboard Shortcuts
 
-This `.exe` bundles torlink v1.8.0 with the Node.js 22 runtime into a single file — no Node.js installation required.
-
-**Transport:** Uses TCP, uTP (if available), and DHT for peer connections. WebRTC peers are disabled for maximum compatibility.
-
-## Usage
-
-- Type a search query and press **Enter**
-- **↑/↓** arrows to navigate results
+- Type a query + **Enter** to search
+- **↑/↓** to navigate results
 - **d** to download, **Shift+d** to choose a different folder
 - **?** for full keyboard shortcuts
 
-Headless modes (run from a terminal):
+## Headless Modes
 
 ```
-torlink.exe search "ubuntu" --category movies
+torlink.exe search "query" --category movies
 torlink.exe seed ./my-folder
 torlink.exe serve
 torlink.exe watch ./incoming
 ```
 
-## Source
+## Building
 
-Built from [baairon/torlink](https://github.com/baairon/torlink) v1.8.0 using esbuild + @yao-pkg/pkg.
+### Option 1: GitHub Actions (Recommended)
+
+1. Fork this repo
+2. Go to **Actions** → **Build Windows EXE** → **Run workflow**
+3. Check "Create release" and set the tag
+4. Download the exe from **Releases** when done
+
+### Option 2: Native Windows Build
+
+Requires: Node.js 22+, Git, Visual Studio Build Tools (C++ workload)
+
+```powershell
+git clone https://github.com/baairon/torlink.git
+cd torlink
+git checkout v1.8.0
+npm install
+npm run build
+npm install -g pkg
+pkg -t node22-win-x64 dist/cli.cjs -o torlink.exe
+.\torlink.exe
+```
+
+## How It Works
+
+Built on GitHub Actions using `windows-latest` runners with Visual Studio Build Tools pre-installed. All native modules (yoga-layout, node-datachannel, utp-native) are compiled natively for Windows x64.
+
+Source: [baairon/torlink](https://github.com/baairon/torlink) v1.8.0

@@ -1,0 +1,116 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub release with the exe'
+        required: false
+        type: boolean
+        default: true
+      tag:
+        description: 'Release tag (e.g. v1.8.0)'
+        required: false
+        type: string
+        default: 'v1.8.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout torlink source
+        uses: actions/checkout@v4
+        with:
+          repository: baairon/torlink
+          ref: v1.8.0
+          path: torlink
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: torlink/package-lock.json
+
+      - name: Install dependencies
+        working-directory: torlink
+        run: npm install
+
+      - name: Build TypeScript
+        working-directory: torlink
+        run: npm run build
+
+      - name: Install pkg
+        run: npm install -g pkg
+
+      - name: Package into EXE
+        working-directory: torlink
+        run: pkg -t node22-win-x64 dist/cli.cjs -o torlink.exe
+
+      - name: Verify exe
+        working-directory: torlink
+        run: |
+          echo "=== File info ==="
+          dir torlink.exe
+          echo "=== Size ==="
+          (Get-Item torlink.exe).Length / 1MB | ForEach-Object { "{0:N1} MB" -f $_ }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: torlink-windows-x64
+          path: torlink/torlink.exe
+          retention-days: 30
+
+      - name: Create Release
+        if: inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: "torlink ${{ inputs.tag }} — Windows x64"
+          body: |
+            ## torlink ${{ inputs.tag }} — Windows Executable
+
+            Built on GitHub Actions with Windows runner + Visual Studio Build Tools.
+
+            All native modules (yoga-layout, node-datachannel, utp-native) compiled natively for Windows x64.
+
+            ### Quick Start
+            1. Download `torlink.exe` below
+            2. Double-click it, or run from a terminal: `torlink.exe`
+            3. No Node.js or other dependencies needed
+
+            ### What it does
+            - **Search** across curated sources (FitGirl, YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease)
+            - **Download** directly to your `Downloads\\torlink\\` folder
+            - **Seed** automatically after download
+            - **Browse** the curated library with no search query
+
+            ### Keyboard shortcuts
+            - Type a query + **Enter** to search
+            - **↑/↓** to navigate, **d** to download, **?** for help
+
+            ### Headless modes
+            ```
+            torlink.exe search "query" --category movies
+            torlink.exe seed ./my-folder
+            torlink.exe serve
+            torlink.exe watch ./incoming
+            ```
+
+            ### Features
+            - Full WebRTC + uTP + TCP/DHT peer transport
+            - Ink-based terminal UI with full keyboard navigation
+            - Built-in torrent client with seeding support
+            - Auto-update check (when running from source)
+
+            ### Source
+            - Built from [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
+            - Node.js 22 runtime embedded via pkg
+            - GitHub Actions: windows-latest runner
+          files: torlink/torlink.exe
+          make_latest: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
