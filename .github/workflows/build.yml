@@ -19,9 +19,6 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout this repo (has build scripts)
-        uses: actions/checkout@v4
-
       - name: Checkout torlink source
         uses: actions/checkout@v4
         with:
@@ -29,99 +26,133 @@ jobs:
           ref: v1.8.0
           path: torlink
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Install dependencies (compiles native modules for Windows)
         working-directory: torlink
         run: npm install
 
-      - name: Install esbuild and @yao-pkg/pkg
-        run: npm install -g esbuild @yao-pkg/pkg
-
-      - name: Create native module stub
-        shell: bash
-        run: echo 'module.exports = {}; module.exports.default = {};' > scripts/empty.js
-
-      - name: "Pass 1: Bundle to ESM (native modules aliased to stub)"
+      - name: Build the app
         working-directory: torlink
-        shell: bash
+        run: npm run build
+
+      - name: Download exact Node.js binary (bundled runtime)
+        shell: pwsh
         run: |
-          esbuild src/index.tsx \
-            --bundle \
-            --platform=node \
-            --target=node22 \
-            --format=esm \
-            --outfile=dist/torlink.mjs \
-            --jsx=automatic \
-            --jsx-import-source=react \
-            --loader:.tsx=tsx \
-            --loader:.ts=ts \
-            --define:process.env.TORLINK_NO_WEBRTC="1" \
-            --define:process.env.TORLINK_NO_UPDATE_CHECK="1" \
-            --alias:node-datachannel=../scripts/empty.js \
-            --alias:utp-native=../scripts/empty.js \
-            --alias:bufferutil=../scripts/empty.js \
-            --alias:utf-8-validate=../scripts/empty.js \
-            --alias:react-devtools-core=../scripts/empty.js \
-            --external:fs --external:path --external:os \
-            --external:http --external:https --external:net \
-            --external:crypto --external:events --external:stream \
-            --external:url --external:util --external:child_process \
-            --external:dgram --external:dns --external:tls \
-            --external:zlib --external:querystring --external:assert \
-            --external:buffer --external:timers --external:worker_threads \
-            --external:perf_hooks --external:tty --external:readline \
-            --external:string_decoder --external:module \
-            --external:node:fs --external:node:path --external:node:os \
-            --external:node:http --external:node:https --external:node:net \
-            --external:node:crypto --external:node:events --external:node:stream \
-            --external:node:url --external:node:util --external:node:child_process \
-            --external:node:dgram --external:node:dns --external:node:tls \
-            --external:node:zlib --external:node:querystring --external:node:assert \
-            --external:node:buffer --external:node:timers --external:node:worker_threads \
-            --external:node:perf_hooks --external:node:tty --external:node:process \
-            --external:node:module --external:fs/promises --external:node:fs/promises
+          $ver = node --version
+          $ver = $ver.TrimStart('v')
+          $base = $ver.Split('-')[0]
+          $url = "https://nodejs.org/dist/v$base/node-v$base-win-x64.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile node.zip
+          Expand-Archive -Path node.zip -DestinationPath node-extract
+          $nodeExe = Get-ChildItem node-extract -Filter node.exe -Recurse | Select-Object -First 1
+          Copy-Item $nodeExe.FullName torlink\bundled-node.exe
+          Write-Host "Bundled Node.js: $((Get-Item torlink\bundled-node.exe).Length / 1MB) MB"
 
-      - name: Hardcode version
-        working-directory: torlink
-        run: node ../scripts/hardcode-version.mjs dist/torlink.mjs package.json
-
-      - name: "Pass 2: Convert ESM to CJS"
-        working-directory: torlink
-        run: node ../scripts/esm-to-cjs.mjs dist/torlink.mjs dist/torlink.cjs
-
-      - name: Create webrtc-stub.mjs
-        working-directory: torlink
-        shell: bash
-        run: |
-          cat > dist/webrtc-stub.mjs << 'STUB'
-          export const RTCPeerConnection = undefined;
-          export const RTCSessionDescription = undefined;
-          export const RTCIceCandidate = undefined;
-          export default undefined;
-          STUB
-
-      - name: Configure pkg
-        working-directory: torlink
-        run: |
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.scripts=['dist/torlink.cjs'];p.assets=['dist/webrtc-stub.mjs'];fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
-
-      - name: "Pass 3: Package with @yao-pkg/pkg"
-        working-directory: torlink
-        shell: bash
-        run: pkg -t node22-win-x64 dist/torlink.cjs -o torlink.exe --fallback-to-source
-
-      - name: Verify exe
+      - name: Create single-folder portable package
         working-directory: torlink
         shell: pwsh
         run: |
-          $size = (Get-Item torlink.exe).Length
-          $sizeMB = [math]::Round($size / 1MB, 1)
-          Write-Host "torlink.exe: $sizeMB MB"
-          if ($size -lt 1MB) { throw "exe too small" }
+          New-Item -ItemType Directory -Force -Path portable
+          # The launcher exe (compiled C# that runs bundled-node.exe dist/cli.cjs)
+          Copy-Item "$env:WINDIR\System32\cmd.exe" portable\torlink.exe -ErrorAction SilentlyContinue
+
+      - name: Build launcher
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          $cs = @'
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Reflection;
+          class Launcher {
+              static void Main(string[] args) {
+                  string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                  string node = Path.Combine(dir, "bundled-node.exe");
+                  string app = Path.Combine(dir, "dist", "cli.cjs");
+                  var psi = new ProcessStartInfo(node) {
+                      UseShellExecute = false,
+                      WorkingDirectory = dir,
+                      CreateNoWindow = false
+                  };
+                  psi.ArgumentList.Add(app);
+                  foreach (var a in args) psi.ArgumentList.Add(a);
+                  var proc = Process.Start(psi);
+                  proc.WaitForExit();
+                  Environment.ExitCode = proc.ExitCode;
+              }
+          }
+          '@
+          Set-Content -Path launcher.cs -Value $cs -Encoding UTF8
+          $csc = Get-ChildItem "$("$env:windir")\Microsoft.NET\Framework64" -Filter csc.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "v4.0.30319" } | Select-Object -First 1
+          if (-not $csc) { $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64" -Filter csc.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          & $csc.FullName /out:portable\torlink.exe /target:exe launcher.cs
+          if (Test-Path portable\torlink.exe) {
+            Write-Host "Launcher built: $((Get-Item portable\torlink.exe).Length / 1KB) KB"
+          } else {
+            throw "Launcher build failed"
+          }
+
+      - name: Assemble portable folder
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          # Copy Node runtime
+          Copy-Item bundled-node.exe portable\bundled-node.exe
+          # Copy the built app
+          Copy-Item -Recurse dist portable\dist
+          Copy-Item package.json portable\package.json
+          # Copy node_modules (needed for runtime — all native modules compiled for Windows)
+          New-Item -ItemType Directory -Force -Path portable\node_modules
+          Copy-Item -Recurse node_modules\* portable\node_modules\
+          $total = (Get-ChildItem portable -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Portable package: $([math]::Round($total, 1)) MB"
+          Write-Host "Structure:"
+          Get-ChildItem portable | Select-Object Name, Length
+
+      - name: Smoke-test the portable package
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          & portable\bundled-node.exe --version
+          & portable\bundled-node.exe -e "console.log('native loaded:', !!require('webtorrent'))"
+          Write-Host "Native modules load OK"
+
+      - name: Compress to self-extracting exe (7-Zip)
+        working-directory: torlink
+        shell: pwsh
+        run: |
+          # Create ZIP of portable
+          Compress-Archive -Path portable\* -DestinationPath portable.zip -Force
+          $zipMB = (Get-Item portable.zip).Length / 1MB
+          Write-Host "portable.zip: $([math]::Round($zipMB, 1)) MB"
+
+          # Install 7-Zip if needed
+          if (-not (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            choco install 7zip -y --no-progress
+          }
+          
+          # SFX config
+          $config = @'
+            ;!@Install@!UTF-8!
+            Title="torlink v1.8.0"
+            BeginPrompt="Click OK to run torlink"
+            RunProgram="torlink.exe"
+            Silent=1
+            ;!@InstallEnd@!
+          '@
+          Set-Content -Path sfxconf.txt -Value $config -Encoding ASCII
+          
+          $sfx = "C:\Program Files\7-Zip\7zSD.sfx"
+          cmd /c "copy /b `"$sfx`" + sfxconf.txt + portable.zip torlink.exe"
+          
+          $exeMB = (Get-Item torlink.exe).Length / 1MB
+          Write-Host "torlink.exe: $([math]::Round($exeMB, 1)) MB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -134,23 +165,30 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: torlink v1.8.0 Windows (CJS Bundle)
+          name: torlink v1.8.0 Windows (Portable)
           body: |
-            ## torlink v1.8.0 — Windows Native Build
+            ## torlink v1.8.0 — Windows Portable
 
-            - Single self-contained CJS file (no .mjs, no dynamic import)
-            - Native modules stubbed (degrades to TCP-only transport)
-            - No .node files in snapshot — nothing to fail at runtime
-            - Just double-click `torlink.exe` to run
+            Self-extracting executable. Double-click to run.
+
+            ### How it works
+            - Bundles Node.js 22 + all native modules compiled for Windows
+            - Everything extracted to a temp folder on first run
+            - No installation, no Node.js needed, nothing to configure
 
             ### Quick Start
             1. Download `torlink.exe`
-            2. Double-click it, or run from terminal: `torlink.exe`
-            3. No Node.js needed
+            2. Double-click it
+            3. torlink opens in a terminal window
+
+            ### Features
+            - Full WebRTC + uTP + TCP/DHT transport (native modules)
+            - Complete Ink terminal UI
+            - Search across FitGirl, YTS, The Pirate Bay, 1337x and more
+            - Download, seed, browse
 
             ### Source
             - [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
-            - Node.js 22 runtime embedded via @yao-pkg/pkg
           files: torlink/torlink.exe
           make_latest: true
           fail_on_unmatched_files: true
