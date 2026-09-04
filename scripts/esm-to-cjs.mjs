@@ -26,7 +26,12 @@ function isBuiltin(mod) {
   return false;
 }
 
-// Phase 1: Convert import/export statements line by line
+// Convert ESM "as" alias to CJS ":" alias
+// import { readFileSync as readFileSync2 } -> { readFileSync: readFileSync2 }
+function fixAliases(imports) {
+  return imports.replace(/\bas\b/g, ":");
+}
+
 const lines = src.split("\n");
 const result = [];
 let i = 0;
@@ -51,7 +56,7 @@ while (i < lines.length) {
   // import { X } from "builtin" (single line)
   m = line.match(/^import\s*\{([^}]+)\}\s*from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[2])) {
-    result.push(`const {${m[1]}} = require("${m[2]}");`);
+    result.push(`const {${fixAliases(m[1])}} = require("${m[2]}");`);
     i++; continue;
   }
 
@@ -59,7 +64,7 @@ while (i < lines.length) {
   m = line.match(/^import\s+(\w+)\s*,\s*\{([^}]+)\}\s*from\s+["']([^"']+)["'];?\s*$/);
   if (m && isBuiltin(m[3])) {
     result.push(`const ${m[1]} = require("${m[3]}");`);
-    result.push(`const {${m[2]}} = require("${m[3]}");`);
+    result.push(`const {${fixAliases(m[2])}} = require("${m[3]}");`);
     i++; continue;
   }
 
@@ -77,7 +82,7 @@ while (i < lines.length) {
       const fullImports = collected + closing;
       const m2 = fullImports.match(/\{([^}]+)\}\s*from\s+["']([^"']+)["'];?\s*$/);
       if (m2 && isBuiltin(m2[2])) {
-        result.push(`const {${m2[1]}} = require("${m2[2]}");`);
+        result.push(`const {${fixAliases(m2[1])}} = require("${m2[2]}");`);
         i = j + 1;
         continue;
       }
@@ -115,14 +120,8 @@ src = src.replace(/^export\s+/gm, "");
 // Phase 3: Replace import.meta.url
 src = src.replace(/import\.meta\.url/g, 'require("node:url").pathToFileURL(__filename).href');
 
-// Phase 4: Handle top-level await by wrapping entire body in async IIFE
-// Find the main execution code (after all __esm definitions and at the bottom)
-// The pattern is: init_xxx() calls at the end of the file
-const tlaPattern = /^(\s*)await\s+(init_\w+)\(\);/gm;
-let hasTLA = tlaPattern.test(src);
-if (hasTLA) {
-  src = src.replace(/^(\s*)await\s+(init_\w+)\(\);/gm, "$1void $2();");
-}
+// Phase 4: Handle top-level await
+src = src.replace(/^(\s*)await\s+(init_\w+)\(\);/gm, "$1void $2();");
 
 const header = `#!/usr/bin/env node
 "use strict";
@@ -151,4 +150,3 @@ process.title = "torlink";
 writeFileSync(outFile, header + src);
 const size = (readFileSync(outFile).length / 1024).toFixed(0);
 console.log("CJS bundle written:", outFile, "(" + size + " KB)");
-console.log("TLA handled:", hasTLA ? "yes (wrapped)" : "no TLA found");
