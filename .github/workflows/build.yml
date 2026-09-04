@@ -14,6 +14,10 @@ on:
         type: string
         default: 'v1.8.0'
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   build:
     runs-on: windows-latest
@@ -39,7 +43,7 @@ jobs:
         working-directory: torlink
         run: npm run build
 
-      - name: Install pkg (maintained fork with Node 22 support)
+      - name: Install @yao-pkg/pkg
         run: npm install -g @yao-pkg/pkg
 
       - name: Package into EXE
@@ -61,6 +65,14 @@ jobs:
           name: torlink-windows-x64
           path: torlink/torlink.exe
           retention-days: 30
+
+      - name: Delete existing release (if any)
+        if: inputs.create_release == true
+        continue-on-error: true
+        run: gh release delete "${{ inputs.tag }}" --yes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: Rezerox39/torlink-windows
 
       - name: Create Release
         if: inputs.create_release == true
