@@ -43,14 +43,11 @@ jobs:
 
       - name: "Pass 1: Bundle to ESM (handles top-level await)"
         working-directory: torlink
-        run: |
-          esbuild src/index.tsx --bundle --platform=node --target=node22 --format=esm --outfile=dist/torlink.mjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
+        run: esbuild src/index.tsx --bundle --platform=node --target=node22 --format=esm --outfile=dist/torlink.mjs --jsx=automatic --jsx-import-source=react --loader:.tsx=tsx --loader:.ts=ts --define:process.env.TORLINK_NO_WEBRTC="1" --define:process.env.TORLINK_NO_UPDATE_CHECK="1" --external:node-datachannel --external:utp-native --external:bufferutil --external:utf-8-validate --external:react-devtools-core --external:fs --external:path --external:events --external:crypto --external:os --external:stream --external:net --external:tls --external:child_process --external:url --external:util --external:buffer --external:zlib --external:http --external:https --external:dns --external:readline --external:querystring --external:string_decoder --external:tty --external:assert --external:module
 
       - name: Hardcode version
         working-directory: torlink
-        shell: pwsh
-        run: |
-          node -e "const fs=require('fs');let s=fs.readFileSync('dist/torlink.mjs','utf8');const p=JSON.parse(fs.readFileSync('package.json','utf8'));s=s.replace(/readFileSync[2]?\(new URL\([^)]+package\.json[^)]+\)/g,'JSON.parse(JSON.stringify({version:\"'+p.version+'\"}))');s=s.replace(/fs\d+\.readFileSync\(new URL\([^)]+package\.json[^)]+\)/g,'JSON.parse(JSON.stringify({version:\"'+p.version+'\"}))');fs.writeFileSync('dist/torlink.mjs',s);console.log('Version hardcoded to '+p.version)"
+        run: node ../scripts/hardcode-version.mjs dist/torlink.mjs package.json
 
       - name: "Pass 2: Convert ESM to CJS"
         working-directory: torlink
