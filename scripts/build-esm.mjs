@@ -1,102 +1,70 @@
-import { build } from "esbuild";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..", "torlink");
 
-// Native modules that cannot be loaded from pkg's snapshot filesystem.
-// We stub them with empty modules so the app degrades gracefully:
-// - node-datachannel: WebRTC (TORLINK_NO_WEBRTC=1 already disables this)
-// - utp-native: uTP transport (webtorrent falls back to TCP)
-// - bufferutil: ws performance optimization (optional)
-// - utf-8-validate: ws performance optimization (optional)
-// - react-devtools-core: dev only (never needed in production)
-const NATIVE_STUBS = [
-  "node-datachannel",
-  "node-datachannel/dist",
-  "node-datachannel/dist/cjs",
-  "node-datachannel/dist/cjs/lib",
-  "utp-native",
-  "bufferutil",
-  "utf-8-validate",
-  "react-devtools-core",
+// Run esbuild via CLI to avoid ESM import resolution issues on Windows
+const args = [
+  "src/index.tsx",
+  "--bundle",
+  "--platform=node",
+  "--target=node22",
+  "--format=esm",
+  "--outfile=dist/torlink.mjs",
+  "--jsx=automatic",
+  "--jsx-import-source=react",
+  "--loader:.tsx=tsx",
+  "--loader:.ts=ts",
+  '--define:process.env.TORLINK_NO_WEBRTC="1"',
+  '--define:process.env.TORLINK_NO_UPDATE_CHECK="1"',
+  // Node.js builtins — keep as external requires
+  "--external:fs", "--external:path", "--external:os",
+  "--external:http", "--external:https", "--external:net",
+  "--external:crypto", "--external:events", "--external:stream",
+  "--external:url", "--external:util", "--external:child_process",
+  "--external:dgram", "--external:dns", "--external:tls",
+  "--external:zlib", "--external:querystring", "--external:assert",
+  "--external:buffer", "--external:timers", "--external:worker_threads",
+  "--external:perf_hooks", "--external:tty", "--external:readline",
+  "--external:string_decoder", "--external:module",
+  "--external:node:fs", "--external:node:path", "--external:node:os",
+  "--external:node:http", "--external:node:https", "--external:node:net",
+  "--external:node:crypto", "--external:node:events", "--external:node:stream",
+  "--external:node:url", "--external:node:util", "--external:node:child_process",
+  "--external:node:dgram", "--external:node:dns", "--external:node:tls",
+  "--external:node:zlib", "--external:node:querystring", "--external:node:assert",
+  "--external:node:buffer", "--external:node:timers", "--external:node:worker_threads",
+  "--external:node:perf_hooks", "--external:node:tty", "--external:node:process",
+  "--external:node:module", "--external:fs/promises", "--external:node:fs/promises",
+  // Native modules — stub via alias to empty CJS file
+  "--alias:node-datachannel=./scripts/empty.js",
+  "--alias:utp-native=./scripts/empty.js",
+  "--alias:bufferutil=./scripts/empty.js",
+  "--alias:utf-8-validate=./scripts/empty.js",
+  "--alias:react-devtools-core=./scripts/empty.js",
+  "--tree-shaking",
+  "--log-level=info",
 ];
 
-const stubPlugin = {
-  name: "stub-native-modules",
-  setup(build) {
-    for (const mod of NATIVE_STUBS) {
-      const filter = new RegExp(
-        "^" + mod.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(/.*)?$"
-      );
-      build.onResolve({ filter }, (args) => ({
-        path: args.path,
-        namespace: "native-stub",
-      }));
-    }
-    build.onLoad({ filter: /.*/, namespace: "native-stub" }, () => ({
-      contents: "module.exports = {}; module.exports.default = {};",
-      loader: "js",
-    }));
-  },
-};
+console.log("Running esbuild via CLI...");
+execFileSync("esbuild", args, { cwd: root, stdio: "inherit" });
 
-async function main() {
-  const outDir = resolve(root, "dist");
+// Hardcode version
+const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+let esm = readFileSync(resolve(root, "dist/torlink.mjs"), "utf8");
+esm = esm.replace(
+  /readFileSync2?\(new URL\("[^"]*package\.json",\s*import\.meta\.url\),\s*"utf8"\)/g,
+  `JSON.stringify({version:"${pkg.version}"})`
+);
+esm = esm.replace(
+  /fs\d+\.readFileSync\(new URL\("[^"]*package\.json",\s*import\.meta\.url\),\s*"utf8"\)/g,
+  `JSON.stringify({version:"${pkg.version}"})`
+);
+writeFileSync(resolve(root, "dist/torlink.mjs"), esm);
 
-  console.log("Bundling torlink to ESM with native module stubs...");
-  await build({
-    entryPoints: [resolve(root, "src/index.tsx")],
-    bundle: true,
-    platform: "node",
-    target: "node22",
-    format: "esm",
-    outfile: resolve(outDir, "torlink.mjs"),
-    plugins: [stubPlugin],
-    jsx: "automatic",
-    jsxImportSource: "react",
-    define: {
-      "process.env.TORLINK_NO_WEBRTC": '"1"',
-      "process.env.TORLINK_NO_UPDATE_CHECK": '"1"',
-    },
-    // Only externalize Node.js builtins — everything else gets bundled
-    external: [
-      "fs", "path", "os", "http", "https", "net", "crypto", "events", "stream",
-      "url", "util", "child_process", "dgram", "dns", "tls", "zlib",
-      "querystring", "assert", "buffer", "timers", "worker_threads",
-      "perf_hooks", "tty", "readline", "string_decoder", "module",
-      "node:fs", "node:path", "node:os", "node:http", "node:https", "node:net",
-      "node:crypto", "node:events", "node:stream", "node:url", "node:util",
-      "node:child_process", "node:dgram", "node:dns", "node:tls", "node:zlib",
-      "node:querystring", "node:assert", "node:buffer", "node:timers",
-      "node:worker_threads", "node:perf_hooks", "node:tty", "node:process",
-      "node:module", "fs/promises", "node:fs/promises",
-    ],
-    treeShaking: true,
-    logLevel: "info",
-  });
-
-  // Hardcode version
-  const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-  let esm = readFileSync(resolve(outDir, "torlink.mjs"), "utf8");
-  esm = esm.replace(
-    /readFileSync2?\(new URL\("[^"]*package\.json",\s*import\.meta\.url\),\s*"utf8"\)/g,
-    `JSON.stringify({version:"${pkg.version}"})`
-  );
-  esm = esm.replace(
-    /fs\d+\.readFileSync\(new URL\("[^"]*package\.json",\s*import\.meta\.url\),\s*"utf8"\)/g,
-    `JSON.stringify({version:"${pkg.version}"})`
-  );
-  writeFileSync(resolve(outDir, "torlink.mjs"), esm);
-
-  const size = readFileSync(resolve(outDir, "torlink.mjs")).length;
-  console.log(`ESM bundle: ${(size / 1024).toFixed(0)} KB`);
-  console.log(`Version hardcoded: ${pkg.version}`);
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const size = readFileSync(resolve(root, "dist/torlink.mjs")).length;
+console.log(`ESM bundle: ${(size / 1024).toFixed(0)} KB`);
+console.log(`Version hardcoded: ${pkg.version}`);
