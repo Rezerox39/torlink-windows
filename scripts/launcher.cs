@@ -11,43 +11,29 @@ class Launcher
         string self = Assembly.GetExecutingAssembly().Location;
         string stamp = DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
         string tmp = Path.Combine(Path.GetTempPath(), "torlink", stamp);
+        string zipFile = Path.Combine(Path.GetTempPath(), "torlink-payload-" + stamp + ".zip");
 
-        byte[] data = File.ReadAllBytes(self);
-        int zipStart = FindZipStart(data);
-        if (zipStart < 0)
+        // --- Extract the embedded ZIP from the end of this exe ---
+        long zipFrom, zipLen;
+        if (!FindZipBounds(self, out zipFrom, out zipLen))
         {
             Console.Error.WriteLine("torlink: no embedded payload found in executable.");
             Environment.Exit(1);
         }
 
-        Directory.CreateDirectory(tmp);
+        ExtractZipPortion(self, zipFrom, zipLen, zipFile);
+
         try
         {
-            using (MemoryStream ms = new MemoryStream(data, zipStart, data.Length - zipStart))
-            using (ZipArchive zip = new ZipArchive(ms, ZipArchiveMode.Read))
-            {
-                foreach (ZipArchiveEntry entry in zip.Entries)
-                {
-                    string target = Path.Combine(tmp, entry.FullName);
-                    if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
-                    {
-                        Directory.CreateDirectory(target);
-                        continue;
-                    }
-                    Directory.CreateDirectory(Path.GetDirectoryName(target));
-                    using (Stream src = entry.Open())
-                    using (FileStream outFile = File.Create(target))
-                    {
-                        src.CopyTo(outFile);
-                    }
-                }
-            }
+            Directory.CreateDirectory(tmp);
+            ZipFile.ExtractToDirectory(zipFile, tmp);
         }
         finally
         {
-            Array.Clear(data, 0, data.Length);
+            try { File.Delete(zipFile); } catch (Exception) { }
         }
 
+        // --- Verify extracted files ---
         string node = Path.Combine(tmp, "bundled-node.exe");
         string app = Path.Combine(tmp, "dist", "cli.cjs");
         if (!File.Exists(node) || !File.Exists(app))
@@ -56,6 +42,7 @@ class Launcher
             Environment.Exit(1);
         }
 
+        // --- Launch bundled Node.js ---
         string allArgs = "\"" + app + "\"";
         foreach (string a in args)
         {
@@ -72,46 +59,101 @@ class Launcher
         Process proc = Process.Start(psi);
         proc.WaitForExit();
 
-        // Try to release the temp folder; okay if it fails (a file may be
-        // locked briefly by an antivirus scanner).
-        try
-        {
-            Directory.Delete(tmp, true);
-        }
-        catch (Exception) { }
+        // Clean up temp folder (best-effort)
+        try { Directory.Delete(tmp, true); } catch (Exception) { }
 
         Environment.ExitCode = proc.ExitCode;
     }
 
-    // Locate the start of the appended ZIP archive by walking the End of
-    // Central Directory record, which sits at the very end of the file.
-    static int FindZipStart(byte[] data)
+    // --- Write just the ZIP bytes from the exe to a temp file ---
+    static void ExtractZipPortion(string exePath, long zipFrom, long zipLen, string dest)
     {
-        // EOCD signature: PK\x05\x06, followed by 16 bytes, then central dir
-        // size (4) and central dir offset (4). Search the last 64KB.
-        int searchFrom = Math.Max(0, data.Length - 65536);
-        int eocd = -1;
-        for (int i = data.Length - 22; i >= searchFrom; i--)
+        using (FileStream src = File.OpenRead(exePath))
         {
-            if (data[i] == 0x50 && data[i + 1] == 0x4B &&
-                data[i + 2] == 0x05 && data[i + 3] == 0x06)
+            src.Seek(zipFrom, SeekOrigin.Begin);
+            using (FileStream dst = File.Create(dest))
+            {
+                long remaining = zipLen;
+                byte[] buf = new byte[1 << 20]; // 1 MB buffer
+                while (remaining > 0)
+                {
+                    int toRead = (int)Math.Min(buf.Length, remaining);
+                    int read = src.Read(buf, 0, toRead);
+                    if (read <= 0) break;
+                    dst.Write(buf, 0, read);
+                    remaining -= read;
+                }
+            }
+        }
+    }
+
+    // --- Locate the embedded ZIP archive ---
+    //
+    // Layout of the final exe:
+    //   [C# launcher PE][ZIP archive]
+    //
+    // The ZIP's End of Central Directory (EOCD, PK\x05\x06) is the last
+    // record in the archive.  It contains:
+    //   offset 12: central directory size (uint32)
+    //   offset 16: central directory offset, relative to ZIP start (uint32)
+    //
+    // So: ZIP start = EOCD_position - centralDirOffset - centralDirSize
+    //
+    // We read only the tail of the exe (the EOCD is always within the last
+    // 65 KB + 22 bytes), scan backwards for the signature, and compute the
+    // ZIP start.
+    static bool FindZipBounds(string exePath, out long zipFrom, out long zipLen)
+    {
+        zipFrom = 0;
+        zipLen = 0;
+
+        long len = new FileInfo(exePath).Length;
+        int tailLen = (int)Math.Min(len, 65536 + 22);
+        byte[] tail = new byte[tailLen];
+
+        using (FileStream fs = File.OpenRead(exePath))
+        {
+            fs.Seek(len - tailLen, SeekOrigin.Begin);
+            int read = 0;
+            while (read < tailLen)
+            {
+                int n = fs.Read(tail, read, tailLen - read);
+                if (n <= 0) break;
+                read += n;
+            }
+        }
+
+        int eocd = -1;
+        for (int i = tailLen - 22; i >= 0; i--)
+        {
+            if (tail[i] == 0x50 && tail[i + 1] == 0x4B &&
+                tail[i + 2] == 0x05 && tail[i + 3] == 0x06)
             {
                 eocd = i;
                 break;
             }
         }
-        if (eocd < 0) return -1;
+        if (eocd < 0) return false;
 
-        // EOCD layout (offset relative to eocd):
-        //   0: signature (4)
-        //   4: disk number (2)
-        //   6: disk with central dir (2)
-        //   8: entries on this disk (2)
-        //   10: total entries (2)
-        //   12: central dir size (4)
-        //   16: central dir offset (4)
-        int centralDirOffset = BitConverter.ToInt32(data, eocd + 16);
-        if (centralDirOffset < 0 || centralDirOffset >= data.Length) return -1;
-        return centralDirOffset;
+        long eocdPos = len - tailLen + eocd;
+
+        // Central directory size (uint32, little-endian) at EOCD+12
+        long cdSize = (long)((uint)tail[eocd + 12] |
+                             (uint)tail[eocd + 13] << 8 |
+                             (uint)tail[eocd + 14] << 16 |
+                             (uint)tail[eocd + 15] << 24);
+
+        // Central directory offset (uint32, little-endian) at EOCD+16
+        long cdOffset = (long)((uint)tail[eocd + 16] |
+                               (uint)tail[eocd + 17] << 8 |
+                               (uint)tail[eocd + 18] << 16 |
+                               (uint)tail[eocd + 19] << 24);
+
+        long start = eocdPos - cdOffset - cdSize;
+        if (start < 0 || start >= len) return false;
+
+        zipFrom = start;
+        zipLen = len - start;
+        return true;
     }
 }
