@@ -76,7 +76,7 @@ jobs:
           & portable\bundled-node.exe -e "require('node:crypto'); require('node:fs'); console.log('Core modules OK')"
           Write-Host "Smoke test passed"
 
-      - name: Compile C# launcher
+      - name: Compile C# self-extracting launcher
         shell: pwsh
         run: |
           $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64\v4.0.30319" -Filter csc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -86,38 +86,38 @@ jobs:
           }
           if (-not $csc) { throw "csc.exe not found" }
           Write-Host "Using: $($csc.FullName)"
-          & $csc.FullName /nologo /out:portable\torlink.exe /target:exe /platform:x64 build-repo\scripts\launcher.cs
-          if (Test-Path portable\torlink.exe) {
-            Write-Host "Launcher built: $((Get-Item portable\torlink.exe).Length / 1KB) KB"
+
+          & $csc.FullName /nologo /out:launcher.exe /target:exe /platform:x64 `
+            /r:System.IO.Compression.dll `
+            build-repo\scripts\launcher.cs
+
+          if (Test-Path launcher.exe) {
+            Write-Host "Launcher built: $((Get-Item launcher.exe).Length / 1KB) KB"
           } else {
             throw "Launcher build failed"
           }
 
-      - name: Create self-extracting exe
+      - name: Create self-extracting exe (append ZIP to launcher)
         shell: pwsh
         run: |
-          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-          if (-not (Test-Path $sevenZip)) { choco install 7zip -y --no-progress }
-          if (-not (Test-Path $sevenZip)) { throw "7-Zip not found" }
+          # Compress the portable folder into a ZIP
+          Compress-Archive -Path portable\* -DestinationPath payload.zip -Force
+          $zipMB = (Get-Item payload.zip).Length / 1MB
+          Write-Host "Payload ZIP: $([math]::Round($zipMB, 1)) MB"
 
-          $sfx = "C:\Program Files\7-Zip\7zSD.sfx"
-          if (-not (Test-Path $sfx)) {
-            Write-Host "7zSD.sfx not found, downloading 7-Zip Extra..."
-            Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2501-extra.7z" -OutFile 7z-extra.7z
-            & $sevenZip x 7z-extra.7z -o7z-extra -y
-            $sfx = Get-ChildItem 7z-extra -Filter "7zSD.sfx" -Recurse | Select-Object -First 1
-            if (-not $sfx) { throw "7zSD.sfx not found even after download" }
-            $sfx = $sfx.FullName
-            Write-Host "Downloaded 7zSD.sfx: $sfx"
-          }
+          # Append the ZIP to the compiled launcher exe
+          # The launcher will search for the ZIP data at the end of its own file
+          $launcher = [System.IO.File]::ReadAllBytes("launcher.exe")
+          $zip = [System.IO.File]::ReadAllBytes("payload.zip")
 
-          & $sevenZip a -t7z -mx=7 -mmt=on portable.7z portable\* -y
-          Write-Host "portable.7z: $((Get-Item portable.7z).Length / 1MB) MB"
+          $exe = New-Object byte[] ($launcher.Length + $zip.Length)
+          [System.Buffer]::BlockCopy($launcher, 0, $exe, 0, $launcher.Length)
+          [System.Buffer]::BlockCopy($zip, 0, $exe, $launcher.Length, $zip.Length)
+          [System.IO.File]::WriteAllBytes("torlink.exe", $exe)
 
-          Copy-Item build-repo\scripts\sfx.conf sfxconf.txt
-          cmd /c "copy /b `"$sfx`" + sfxconf.txt + portable.7z torlink.exe"
-          if (-not (Test-Path torlink.exe)) { throw "SFX creation failed" }
-          Write-Host "torlink.exe: $((Get-Item torlink.exe).Length / 1MB) MB"
+          $finalMB = (Get-Item torlink.exe).Length / 1MB
+          Write-Host "torlink.exe: $([math]::Round($finalMB, 1)) MB"
+          Write-Host "Launcher: $([math]::Round($launcher.Length / 1KB)) KB + Payload: $([math]::Round($zipMB, 1)) MB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
