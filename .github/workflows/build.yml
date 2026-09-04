@@ -127,7 +127,7 @@ jobs:
       - name: Package with @yao-pkg/pkg
         working-directory: torlink
         shell: bash
-        run: pkg -t node22-win-x64 -o torlink.exe --fallback-to-source
+        run: pkg -t node22-win-x64 entry.cjs -o torlink.exe --fallback-to-source
 
       - name: Verify exe
         working-directory: torlink
