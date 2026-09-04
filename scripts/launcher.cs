@@ -12,7 +12,41 @@ class Launcher
         string stamp = DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
         string tmp = Path.Combine(Path.GetTempPath(), "torlink", stamp);
 
-        ExtractSelf(self, tmp);
+        byte[] data = File.ReadAllBytes(self);
+        int zipStart = FindZipStart(data);
+        if (zipStart < 0)
+        {
+            Console.Error.WriteLine("torlink: no embedded payload found in executable.");
+            Environment.Exit(1);
+        }
+
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            using (MemoryStream ms = new MemoryStream(data, zipStart, data.Length - zipStart))
+            using (ZipArchive zip = new ZipArchive(ms, ZipArchiveMode.Read))
+            {
+                foreach (ZipArchiveEntry entry in zip.Entries)
+                {
+                    string target = Path.Combine(tmp, entry.FullName);
+                    if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
+                    {
+                        Directory.CreateDirectory(target);
+                        continue;
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+                    using (Stream src = entry.Open())
+                    using (FileStream outFile = File.Create(target))
+                    {
+                        src.CopyTo(outFile);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Array.Clear(data, 0, data.Length);
+        }
 
         string node = Path.Combine(tmp, "bundled-node.exe");
         string app = Path.Combine(tmp, "dist", "cli.cjs");
@@ -38,52 +72,46 @@ class Launcher
         Process proc = Process.Start(psi);
         proc.WaitForExit();
 
-        try { Directory.Delete(tmp, true); } catch (Exception) { }
+        // Try to release the temp folder; okay if it fails (a file may be
+        // locked briefly by an antivirus scanner).
+        try
+        {
+            Directory.Delete(tmp, true);
+        }
+        catch (Exception) { }
+
         Environment.ExitCode = proc.ExitCode;
     }
 
-    static void ExtractSelf(string self, string dest)
+    // Locate the start of the appended ZIP archive by walking the End of
+    // Central Directory record, which sits at the very end of the file.
+    static int FindZipStart(byte[] data)
     {
-        byte[] data = File.ReadAllBytes(self);
-        int start = -1;
-        // Scan backwards for the ZIP local file header ("PK\x03\x04").
-        // The ZIP payload is appended at the very end of this exe, so the
-        // last occurrence is the start of the embedded archive.
-        for (int i = data.Length - 4; i >= 0; i--)
+        // EOCD signature: PK\x05\x06, followed by 16 bytes, then central dir
+        // size (4) and central dir offset (4). Search the last 64KB.
+        int searchFrom = Math.Max(0, data.Length - 65536);
+        int eocd = -1;
+        for (int i = data.Length - 22; i >= searchFrom; i--)
         {
             if (data[i] == 0x50 && data[i + 1] == 0x4B &&
-                data[i + 2] == 0x03 && data[i + 3] == 0x04)
+                data[i + 2] == 0x05 && data[i + 3] == 0x06)
             {
-                start = i;
+                eocd = i;
                 break;
             }
         }
-        if (start < 0)
-        {
-            Console.Error.WriteLine("torlink: no embedded payload found in executable.");
-            Environment.Exit(1);
-        }
+        if (eocd < 0) return -1;
 
-        Directory.CreateDirectory(dest);
-        using (MemoryStream ms = new MemoryStream(data, start, data.Length - start))
-        using (ZipArchive zip = new ZipArchive(ms, ZipArchiveMode.Read))
-        {
-            foreach (ZipArchiveEntry entry in zip.Entries)
-            {
-                string target = Path.Combine(dest, entry.FullName);
-                if (entry.FullName.EndsWith("/"))
-                {
-                    Directory.CreateDirectory(target);
-                    continue;
-                }
-                Directory.CreateDirectory(Path.GetDirectoryName(target));
-                using (Stream src = entry.Open())
-                using (FileStream outFile = File.Create(target))
-                {
-                    src.CopyTo(outFile);
-                }
-            }
-        }
-        Array.Clear(data, 0, data.Length);
+        // EOCD layout (offset relative to eocd):
+        //   0: signature (4)
+        //   4: disk number (2)
+        //   6: disk with central dir (2)
+        //   8: entries on this disk (2)
+        //   10: total entries (2)
+        //   12: central dir size (4)
+        //   16: central dir offset (4)
+        int centralDirOffset = BitConverter.ToInt32(data, eocd + 16);
+        if (centralDirOffset < 0 || centralDirOffset >= data.Length) return -1;
+        return centralDirOffset;
     }
 }

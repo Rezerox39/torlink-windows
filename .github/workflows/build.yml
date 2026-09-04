@@ -119,6 +119,22 @@ jobs:
           Write-Host "torlink.exe: $([math]::Round($finalMB, 1)) MB"
           Write-Host "Launcher: $([math]::Round($launcher.Length / 1KB)) KB + Payload: $([math]::Round($zipMB, 1)) MB"
 
+
+      - name: End-to-end smoke test (run the self-extracting exe)
+        shell: pwsh
+        run: |
+          # Run the actual exe with --version to prove self-extraction + node + app launch works
+          $out = & .\torlink.exe --version 2>&1
+          Write-Host "--- Output ---"
+          Write-Host $out
+          Write-Host "--- End ---"
+          $exitCode = $LASTEXITCODE
+          Write-Host "Exit code: $exitCode"
+          if ($LASTEXITCODE -ne 0) {
+            throw "torlink.exe --version failed with exit code $LASTEXITCODE"
+          }
+          Write-Host "Smoke test PASSED: torlink.exe launches and runs"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
