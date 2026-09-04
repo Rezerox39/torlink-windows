@@ -19,6 +19,11 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      - name: Checkout torlink-windows repo
+        uses: actions/checkout@v4
+        with:
+          path: build-repo
+
       - name: Checkout torlink source
         uses: actions/checkout@v4
         with:
@@ -31,7 +36,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies (compiles native modules for Windows)
+      - name: Install dependencies
         working-directory: torlink
         run: npm install
 
@@ -39,11 +44,10 @@ jobs:
         working-directory: torlink
         run: npm run build
 
-      - name: Download exact Node.js binary (bundled runtime)
+      - name: Download bundled Node.js
         shell: pwsh
         run: |
-          $ver = node --version
-          $ver = $ver.TrimStart('v')
+          $ver = (node --version).TrimStart('v')
           $base = $ver.Split('-')[0]
           $url = "https://nodejs.org/dist/v$base/node-v$base-win-x64.zip"
           Write-Host "Downloading $url"
@@ -53,112 +57,65 @@ jobs:
           Copy-Item $nodeExe.FullName torlink\bundled-node.exe
           Write-Host "Bundled Node.js: $((Get-Item torlink\bundled-node.exe).Length / 1MB) MB"
 
-      - name: Create single-folder portable package
-        working-directory: torlink
+      - name: Build portable folder
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path portable
-          # The launcher exe (compiled C# that runs bundled-node.exe dist/cli.cjs)
-          Copy-Item "$env:WINDIR\System32\cmd.exe" portable\torlink.exe -ErrorAction SilentlyContinue
+          if (Test-Path portable) { Remove-Item -Recurse -Force portable }
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item torlink\bundled-node.exe portable\bundled-node.exe
+          Copy-Item -Recurse torlink\dist portable\dist
+          Copy-Item torlink\package.json portable\package.json
+          Copy-Item -Recurse torlink\node_modules portable\node_modules
+          $total = (Get-ChildItem portable -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Portable folder: $([math]::Round($total, 1)) MB"
 
-      - name: Build launcher
-        working-directory: torlink
+      - name: Smoke test
         shell: pwsh
         run: |
-          $cs = @'
-          using System;
-          using System.Diagnostics;
-          using System.IO;
-          using System.Reflection;
-          class Launcher {
-              static void Main(string[] args) {
-                  string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                  string node = Path.Combine(dir, "bundled-node.exe");
-                  string app = Path.Combine(dir, "dist", "cli.cjs");
-                  var psi = new ProcessStartInfo(node) {
-                      UseShellExecute = false,
-                      WorkingDirectory = dir,
-                      CreateNoWindow = false
-                  };
-                  psi.ArgumentList.Add(app);
-                  foreach (var a in args) psi.ArgumentList.Add(a);
-                  var proc = Process.Start(psi);
-                  proc.WaitForExit();
-                  Environment.ExitCode = proc.ExitCode;
-              }
+          & portable\bundled-node.exe --version
+          & portable\bundled-node.exe -e "require('node:crypto'); require('node:fs'); console.log('Core modules OK')"
+          Write-Host "Smoke test passed"
+
+      - name: Compile C# launcher
+        shell: pwsh
+        run: |
+          $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64\v4.0.30319" -Filter csc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $csc) {
+            $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64" -Filter csc.exe -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "v4" } | Select-Object -First 1
           }
-          '@
-          Set-Content -Path launcher.cs -Value $cs -Encoding UTF8
-          $csc = Get-ChildItem "$("$env:windir")\Microsoft.NET\Framework64" -Filter csc.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "v4.0.30319" } | Select-Object -First 1
-          if (-not $csc) { $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64" -Filter csc.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 }
-          & $csc.FullName /out:portable\torlink.exe /target:exe launcher.cs
+          if (-not $csc) { throw "csc.exe not found" }
+          Write-Host "Using: $($csc.FullName)"
+          & $csc.FullName /nologo /out:portable\torlink.exe /target:exe /platform:x64 build-repo\scripts\launcher.cs
           if (Test-Path portable\torlink.exe) {
             Write-Host "Launcher built: $((Get-Item portable\torlink.exe).Length / 1KB) KB"
           } else {
             throw "Launcher build failed"
           }
 
-      - name: Assemble portable folder
-        working-directory: torlink
+      - name: Create self-extracting exe
         shell: pwsh
         run: |
-          # Copy Node runtime
-          Copy-Item bundled-node.exe portable\bundled-node.exe
-          # Copy the built app
-          Copy-Item -Recurse dist portable\dist
-          Copy-Item package.json portable\package.json
-          # Copy node_modules (needed for runtime — all native modules compiled for Windows)
-          New-Item -ItemType Directory -Force -Path portable\node_modules
-          Copy-Item -Recurse node_modules\* portable\node_modules\
-          $total = (Get-ChildItem portable -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-          Write-Host "Portable package: $([math]::Round($total, 1)) MB"
-          Write-Host "Structure:"
-          Get-ChildItem portable | Select-Object Name, Length
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) { choco install 7zip -y --no-progress }
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip not found" }
 
-      - name: Smoke-test the portable package
-        working-directory: torlink
-        shell: pwsh
-        run: |
-          & portable\bundled-node.exe --version
-          & portable\bundled-node.exe -e "console.log('native loaded:', !!require('webtorrent'))"
-          Write-Host "Native modules load OK"
-
-      - name: Compress to self-extracting exe (7-Zip)
-        working-directory: torlink
-        shell: pwsh
-        run: |
-          # Create ZIP of portable
-          Compress-Archive -Path portable\* -DestinationPath portable.zip -Force
-          $zipMB = (Get-Item portable.zip).Length / 1MB
-          Write-Host "portable.zip: $([math]::Round($zipMB, 1)) MB"
-
-          # Install 7-Zip if needed
-          if (-not (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
-            choco install 7zip -y --no-progress
-          }
-          
-          # SFX config
-          $config = @'
-            ;!@Install@!UTF-8!
-            Title="torlink v1.8.0"
-            BeginPrompt="Click OK to run torlink"
-            RunProgram="torlink.exe"
-            Silent=1
-            ;!@InstallEnd@!
-          '@
-          Set-Content -Path sfxconf.txt -Value $config -Encoding ASCII
-          
           $sfx = "C:\Program Files\7-Zip\7zSD.sfx"
-          cmd /c "copy /b `"$sfx`" + sfxconf.txt + portable.zip torlink.exe"
-          
-          $exeMB = (Get-Item torlink.exe).Length / 1MB
-          Write-Host "torlink.exe: $([math]::Round($exeMB, 1)) MB"
+          if (-not (Test-Path $sfx)) { throw "7zSD.sfx not found at $sfx" }
+
+          & $sevenZip a -t7z -mx=7 -mmt=on portable.7z portable\* -y
+          Write-Host "portable.7z: $((Get-Item portable.7z).Length / 1MB) MB"
+
+          Copy-Item build-repo\scripts\sfx.conf sfxconf.txt
+          cmd /c "copy /b `"$sfx`" + sfxconf.txt + portable.7z torlink.exe"
+          if (-not (Test-Path torlink.exe)) { throw "SFX creation failed" }
+          Write-Host "torlink.exe: $((Get-Item torlink.exe).Length / 1MB) MB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: torlink-windows
-          path: torlink/torlink.exe
+          path: torlink.exe
 
       - name: Create Release
         if: inputs.create_release == true
@@ -167,29 +124,18 @@ jobs:
           tag_name: ${{ inputs.tag }}
           name: torlink v1.8.0 Windows (Portable)
           body: |
-            ## torlink v1.8.0 — Windows Portable
+            ## torlink v1.8.0 - Windows Portable
 
             Self-extracting executable. Double-click to run.
 
-            ### How it works
             - Bundles Node.js 22 + all native modules compiled for Windows
-            - Everything extracted to a temp folder on first run
-            - No installation, no Node.js needed, nothing to configure
+            - Extracts to a temp folder, runs torlink, cleans up on exit
+            - No installation needed, no Node.js required
 
-            ### Quick Start
-            1. Download `torlink.exe`
-            2. Double-click it
-            3. torlink opens in a terminal window
+            **Quick Start:** Download `torlink.exe`, double-click it.
 
-            ### Features
-            - Full WebRTC + uTP + TCP/DHT transport (native modules)
-            - Complete Ink terminal UI
-            - Search across FitGirl, YTS, The Pirate Bay, 1337x and more
-            - Download, seed, browse
-
-            ### Source
-            - [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
-          files: torlink/torlink.exe
+            **Source:** [baairon/torlink](https://github.com/baairon/torlink) v1.8.0
+          files: torlink.exe
           make_latest: true
           fail_on_unmatched_files: true
         env:
