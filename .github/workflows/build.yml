@@ -103,7 +103,7 @@ jobs:
           $sfx = "C:\Program Files\7-Zip\7zSD.sfx"
           if (-not (Test-Path $sfx)) {
             Write-Host "7zSD.sfx not found, downloading 7-Zip Extra..."
-            Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2409-extra.7z" -OutFile 7z-extra.7z
+            Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2501-extra.7z" -OutFile 7z-extra.7z
             & $sevenZip x 7z-extra.7z -o7z-extra -y
             $sfx = Get-ChildItem 7z-extra -Filter "7zSD.sfx" -Recurse | Select-Object -First 1
             if (-not $sfx) { throw "7zSD.sfx not found even after download" }
