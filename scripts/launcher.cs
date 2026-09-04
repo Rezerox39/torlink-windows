@@ -23,10 +23,31 @@ class Launcher
 
         ExtractZipPortion(self, zipFrom, zipLen, zipFile);
 
+        // --- Extract the ZIP contents to temp dir using ZipArchive ---
         try
         {
             Directory.CreateDirectory(tmp);
-            ZipFile.ExtractToDirectory(zipFile, tmp);
+            using (FileStream zipStream = File.OpenRead(zipFile))
+            using (ZipArchive archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
+            {
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    string target = Path.Combine(tmp, entry.FullName);
+                    if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
+                    {
+                        Directory.CreateDirectory(target);
+                        continue;
+                    }
+                    string dir = Path.GetDirectoryName(target);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                    using (Stream src = entry.Open())
+                    using (FileStream dst = File.Create(target))
+                    {
+                        src.CopyTo(dst);
+                    }
+                }
+            }
         }
         finally
         {
@@ -98,10 +119,6 @@ class Launcher
     //   offset 16: central directory offset, relative to ZIP start (uint32)
     //
     // So: ZIP start = EOCD_position - centralDirOffset - centralDirSize
-    //
-    // We read only the tail of the exe (the EOCD is always within the last
-    // 65 KB + 22 bytes), scan backwards for the signature, and compute the
-    // ZIP start.
     static bool FindZipBounds(string exePath, out long zipFrom, out long zipLen)
     {
         zipFrom = 0;
@@ -137,17 +154,8 @@ class Launcher
 
         long eocdPos = len - tailLen + eocd;
 
-        // Central directory size (uint32, little-endian) at EOCD+12
-        long cdSize = (long)((uint)tail[eocd + 12] |
-                             (uint)tail[eocd + 13] << 8 |
-                             (uint)tail[eocd + 14] << 16 |
-                             (uint)tail[eocd + 15] << 24);
-
-        // Central directory offset (uint32, little-endian) at EOCD+16
-        long cdOffset = (long)((uint)tail[eocd + 16] |
-                               (uint)tail[eocd + 17] << 8 |
-                               (uint)tail[eocd + 18] << 16 |
-                               (uint)tail[eocd + 19] << 24);
+        long cdSize = ReadUInt32(tail, eocd + 12);
+        long cdOffset = ReadUInt32(tail, eocd + 16);
 
         long start = eocdPos - cdOffset - cdSize;
         if (start < 0 || start >= len) return false;
@@ -155,5 +163,13 @@ class Launcher
         zipFrom = start;
         zipLen = len - start;
         return true;
+    }
+
+    static long ReadUInt32(byte[] b, int off)
+    {
+        return (long)((uint)b[off] |
+                      (uint)b[off + 1] << 8 |
+                      (uint)b[off + 2] << 16 |
+                      (uint)b[off + 3] << 24);
     }
 }
