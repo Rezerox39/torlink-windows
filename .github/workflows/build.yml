@@ -36,6 +36,15 @@ jobs:
         with:
           node-version: 22
 
+      - name: Apply speed tuning patch
+        shell: pwsh
+        run: |
+          # uTP (LEDBAT) throttles below TCP speeds; raise connection cap
+          # from webtorrent's default 55 to 200 for faster downloads.
+          git -C torlink apply ../build-repo/patches/engine-speed.patch
+          Write-Host "Patch applied:"
+          git -C torlink diff --stat
+
       - name: Install dependencies
         working-directory: torlink
         run: npm install

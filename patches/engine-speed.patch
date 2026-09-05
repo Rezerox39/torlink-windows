@@ -1,0 +1,20 @@
+diff --git a/src/download/engine.ts b/src/download/engine.ts
+index 17868c5..567690c 100644
+--- a/src/download/engine.ts
++++ b/src/download/engine.ts
+@@ -45,7 +45,14 @@ export class TorrentEngine {
+       // the app the moment a download starts. NAT-PMP can never succeed
+       // on macOS because the port is permanently taken, so disable it
+       // and let UPnP handle NAT traversal instead.
+-      const opts = process.platform === "darwin" ? { natPmp: false } : {};
++      // Speed tuning for the desktop build:
++      // - uTP (LEDBAT) deliberately throttles below TCP speeds; public
++      //   swarms are mostly TCP-native peers, so plain TCP wins here.
++      // - webtorrent's default cap of 55 connections limits parallel piece
++      //   requests; 200 lets fast swarms feed the disk continuously.
++      const opts = process.platform === "darwin"
++        ? { natPmp: false, utp: false, maxConns: 200 }
++        : { utp: false, maxConns: 200 };
+       this.client = new WebTorrent(opts);
+       this.client.on("error", () => {});
+     }
